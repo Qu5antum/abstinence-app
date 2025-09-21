@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
 import localeData from "dayjs/plugin/localeData";
-import { db } from "./firebase"; 
+import { db } from "./firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 
 dayjs.extend(localeData);
@@ -10,73 +10,107 @@ export default function Calendar() {
   const [currentDate, setCurrentDate] = useState(dayjs());
   const [passedDays, setPassedDays] = useState([]);
   const [counter, setCounter] = useState(0);
-  const [loaded, setLoaded] = useState(false); // 🔹 флаг загрузки данных
+  const [loaded, setLoaded] = useState(false);
+  const [recordCounter, setRecord] = useState(0)
 
   const daysInMonth = currentDate.daysInMonth();
   const startOfMonth = currentDate.startOf("month").day();
-  const today = dayjs();
+  const today = dayjs().startOf("day");
 
-  // 🔹 Загружаем данные из Firebase
+  // 🔹 Загружаем и обновляем данные
   useEffect(() => {
     async function fetchData() {
       const docRef = doc(db, "calendar", "progress");
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
-        const data = docSnap.data();
-        setCounter(data.counter || 0);
-        setPassedDays(data.passedDays || []);
+        let { counter, passedDays, lastUpdate, recordCounter } = docSnap.data();
+
+        counter = counter || 0;
+        passedDays = passedDays || [];
+        let last = lastUpdate ? dayjs(lastUpdate) : null;
+        recordCounter= recordCounter || 0
+
+        // Проверяем, прошёл ли новый день
+        if (!last || last.isBefore(today)) {
+          const diff = today.diff(last, "day") || 1; // сколько дней прошло
+
+          counter += diff;
+
+          for (let i = 1; i <= diff; i++) {
+            const dayToAdd = today.subtract(i, "day");
+            passedDays.push({
+              day: dayToAdd.date(),
+              month: dayToAdd.month(),
+              year: dayToAdd.year(),
+            });
+          }
+
+          // Сохраняем новое состояние
+          await setDoc(docRef, {
+            counter,
+            passedDays,
+            lastUpdate: today.format("YYYY-MM-DD"),
+            recordCounter,
+          }, { merge: true });
+        }
+
+        setCounter(counter);
+        setPassedDays(passedDays);
+        setRecord(recordCounter)
+      } else {
+        // первый запуск → ничего не подсвечиваем, пока не пройдёт день
+        await setDoc(docRef, {
+          counter: 0,
+          passedDays: [],
+          lastUpdate: today.format("YYYY-MM-DD"),
+          recordCounter: 0,
+        });
+        setCounter(0);
+        setPassedDays([]);
+        setRecord(0);
       }
-      setLoaded(true); // ✅ теперь можно сохранять
+
+      setLoaded(true);
     }
+
     fetchData();
   }, []);
 
-  // 🔹 Сохраняем данные в Firebase только после загрузки
-  useEffect(() => {
-    if (!loaded) return; // ❌ не сохраняем до загрузки
-    async function saveData() {
-      await setDoc(doc(db, "calendar", "progress"), {
-        counter,
-        passedDays,
-      });
-    }
-    saveData();
-  }, [counter, passedDays, loaded]);
+  // 🔹 Обнуление
+  const handleClick = async () => {
+    const today = dayjs().startOf("day");
 
-  // 🔹 Проверка полуночи
-  useEffect(() => {
-    function checkMidnight() {
-      const now = dayjs();
-      if (now.hour() === 0 && now.minute() === 0 && now.second() === 0) {
-        setCounter((prev) => prev + 1);
-        setPassedDays((prev) => [
-          ...prev,
-          { day: now.date(), month: now.month(), year: now.year() }
-        ]);
-        setCurrentDate(now);
-      }
+    let newRecord = Number(recordCounter) || 0;
+    if (Number(counter) > newRecord) {
+      newRecord = Number(counter);
     }
 
-    const timer = setInterval(checkMidnight, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const handleClick = () => {
     setCounter(0);
     setPassedDays([]);
+    setRecord(newRecord);
+    await setDoc(doc(db, "calendar", "progress"), {
+      counter: 0,
+      passedDays: [],
+      lastUpdate: today.format("YYYY-MM-DD"),
+      recordCounter: newRecord,
+    });
   };
 
-  // Создаем массив дней месяца
+  // Создаём массив дней месяца
   const days = [];
   for (let i = 0; i < startOfMonth; i++) days.push(null);
   for (let d = 1; d <= daysInMonth; d++) days.push(d);
 
   return (
     <div className="bg-gray-800 text-white p-6 rounded-xl shadow-lg">
-      <div className="text-2xl flex font-mono bg-gray-800 rounded-full px-2 py-2">
-        Пройдено дней: <span className="font-bold">{counter}</span>
+      <div className="text-2xl flex font-mono bg-gray-800 rounded-full px-0 py-2">
+        Пройдено: <span className="font-bold">{counter} дней</span>
       </div>
+      <div className="text-2xl flex font-mono bg-gray-800 rounded-full px-0 py-2">
+          Рекорд: <span className="font-bold">{recordCounter} дней</span> 
+      </div>
+
       <div className="buttons my-2">
         <button
           className="text-1xl flex font-mono bg-gray-800 rounded-full px-4 py-3 shadow-lg transition duration-200 hover:ring-2 hover:ring-blue-400 hover:ring-offset-2 hover:ring-offset-gray-800"
@@ -99,10 +133,7 @@ export default function Calendar() {
           <select
             value={currentDate.format("MMMM")}
             onChange={(e) => {
-              const monthIndex = dayjs()
-                .localeData()
-                .months()
-                .indexOf(e.target.value);
+              const monthIndex = dayjs().localeData().months().indexOf(e.target.value);
               setCurrentDate(currentDate.month(monthIndex));
             }}
             className="border rounded px-2 py-1 bg-gray-700 text-white"
@@ -164,7 +195,7 @@ export default function Calendar() {
           return (
             <div
               key={index}
-              className={`p-2 rounded-lg ${
+              className={`aspect-square flex items-center justify-center rounded-xl text-sm sm:text-base ${
                 isToday
                   ? "bg-blue-500 text-white font-bold"
                   : isPrevHighlighted
